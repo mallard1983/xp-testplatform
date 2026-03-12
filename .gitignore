@@ -1,0 +1,31 @@
+# Credentials — never commit
+.env
+data/setup/keys.json
+
+# Local setup configs (models, experiments, prompts) — configure fresh after clone
+# Remove this line if you want to commit your configs to a fork
+data/setup/
+
+# Neo4j data directories — binary, large, not suitable for git
+data/active_neo4j/
+data/tests/
+
+# Smoke test results — transient, not for publication
+results/smoke-*/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# Node / Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+orchestrator/static/
+
+# OS
+.DS_Store
+Thumbs.db

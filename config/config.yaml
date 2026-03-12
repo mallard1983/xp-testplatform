@@ -1,0 +1,61 @@
+# XP Framework Test Platform — Default Experiment Configuration
+# All values here are global defaults. Individual tests may override any parameter.
+# Overrides are recorded in each run's summary.json for full audit traceability.
+
+experiment:
+  # Number of turns per run (opening exchange does not count toward this total)
+  turn_limit: 200
+
+  # Context window size in tokens (must match the models used in the test)
+  context_window: 256000
+
+  # Baseline compaction threshold as a fraction of context_window
+  # Compaction fires when the message array exceeds this size
+  # Default: 80% of context_window = ~204,800 tokens for a 256K model
+  compaction_threshold_fraction: 0.80
+
+  # Pass 1 activation threshold as a fraction of context_window
+  # Below this, proxy passes full history straight to Pass 2
+  # Above this, Pass 1 activates and curates context
+  # Default: 50% of context_window = ~128,000 tokens for a 256K model
+  pass1_activation_fraction: 0.50
+
+  # Target context size that Pass 1 aims to produce, as a fraction of context_window
+  # Soft bounds allow Pass 1 judgment within this range
+  pass1_target_fraction: 0.50
+  pass1_target_min_fraction: 0.35   # ~90K for 256K model
+  pass1_target_max_fraction: 0.49   # ~125K for 256K model
+
+  # Pause between turns in seconds (rate limit buffer between API calls)
+  turn_pause_seconds: 5
+
+  # Checkpoint turns — responses at these turns are extracted as evaluation artifacts
+  checkpoint_turns: [50, 100, 150, 200]
+
+substrate:
+  # Embedding model served by the local ollama-embed container
+  embed_model: nomic-embed-text
+  embed_dimensions: 768
+
+  # Maximum tool calls Pass 1 may make per retrieval session
+  pass1_tool_budget: 8
+
+  # Maximum ThoughtStreams to include in a single context block
+  pass1_max_streams: 6
+
+  # Maximum total words of stream content in a single context block
+  pass1_max_content_words: 2000
+
+search:
+  # Search is enabled by default — can be disabled per test or globally via UI
+  enabled: true
+
+  # Supported providers: brave, searxng
+  # Provider credentials are set via UI and stored in data/setup/keys.json
+  provider: brave
+
+logging:
+  # Raw log records every API call, tool call, search call, and orchestrator event
+  # Transcript log records speaker + message only (human-readable)
+  raw_format: jsonl
+  transcript_format: md

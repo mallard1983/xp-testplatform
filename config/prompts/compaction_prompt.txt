@@ -1,0 +1,23 @@
+The conversation history is approaching the context limit. Before continuing, produce a structured summary of everything covered so far. This summary will replace the conversation history and must preserve all information needed to continue reasoning without loss of continuity.
+
+Your summary must address each of the following sections completely:
+
+GOAL
+What problem or question is this conversation exploring? State it precisely as it has been refined through the conversation, not just the original opening question.
+
+KEY CONSTRAINTS ESTABLISHED
+List every constraint, boundary condition, or design requirement that has been established and agreed upon. For each one, note the reasoning that produced it — not just what was decided, but why.
+
+REASONING DIRECTIONS EXPLORED
+Describe each major line of reasoning that has been pursued. For each direction, note: what the direction was, what it produced, and whether it remains open or has been resolved.
+
+APPROACHES REJECTED
+List every approach, framing, or direction that was considered and set aside. For each, state why it was rejected. Rejected paths are as important as accepted ones — they bound the solution space.
+
+CONCLUSIONS REACHED
+State every conclusion that has been reached with confidence. Be specific. Vague summaries are not useful. If a conclusion came with caveats or conditions, include them.
+
+OPEN QUESTIONS REMAINING
+List every question that is currently unresolved. These are the active threads the conversation should continue to pursue.
+
+Write the summary now. Do not truncate any section. Completeness is more important than brevity.
