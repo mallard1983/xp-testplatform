@@ -336,6 +336,26 @@ Results from this platform are welcome in this repository. If you run the experi
 results/{your-experiment-name}/
 ```
 
-Include the `summary.json` and transcript files at minimum. Raw JSONL logs and checkpoint artifacts are optional but appreciated for reproducibility. If you ran a variant (different model, different prompts, different turn limit), a brief note in your PR description explaining the setup is all that's needed.
+There is no formal review process. The goal is to accumulate a public record of how different models and configurations perform under this kind of extended, structured conversation. Positive results, negative results, and inconclusive results are all equally useful.
 
-There is no formal review process — the goal is to accumulate a public record of how different models and configurations perform under this kind of extended, structured conversation. Positive results, negative results, and inconclusive results are all equally useful.
+### To keep results comparable
+
+A few lightweight conventions make the data useful rather than just numerous:
+
+**Required:**
+- `summary.json` — generated automatically by every run; do not edit it. This is the primary record of what was actually run.
+- At least one transcript file (`transcript_*.md`) for each condition you are submitting.
+
+**In your PR description, include:**
+- Model name and parameter count (e.g. `Qwen3 32B`)
+- Quantization if applicable (e.g. `Q4_K_M`, `fp16`, `bf16`)
+- Hardware (e.g. `RTX 4090 24GB`, `M3 Max 96GB`, `cloud API`)
+- Any parameters you changed from the defaults, and why
+- A brief qualitative note on what you observed — even one sentence is enough
+
+**Please don't:**
+- Edit transcript files after generation — unmodified transcripts are the point
+- Submit partial runs (both conditions must be complete for the comparison to be valid)
+- Change the directory structure inside your result folder
+
+Raw JSONL logs and checkpoint artifacts are optional but appreciated for reproducibility. If you ran a variant — different prompts, different turn limit, different interviewer — note that clearly so it can be interpreted in context rather than treated as a straight replication.
