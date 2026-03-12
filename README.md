@@ -139,7 +139,7 @@ Parameter overrides are optional. Leave them blank to inherit global defaults (s
 
 ### 6. Run
 
-Select your experiment in the sidebar and click **+ Baseline** or **+ Proxy**. The conversation streams live in the main view.
+Select your experiment in the sidebar and click **+ Baseline**, **+ Proxy**, or **+ Both**. The conversation streams live in the main view. Runs are queued automatically — if you start a second run while one is active it will wait and start when the first completes.
 
 ---
 
@@ -147,7 +147,19 @@ Select your experiment in the sidebar and click **+ Baseline** or **+ Proxy**. T
 
 ### Sidebar
 
-Lists all experiments and their completed runs. Click a run to load it. Click **+ Baseline** or **+ Proxy** to start a new run for that experiment. Proxy runs can optionally copy the substrate from a prior proxy run (the source is never modified).
+Lists all experiments and their completed runs. Click a run to load it.
+
+Three buttons appear under each experiment:
+
+| Button | What it does |
+|--------|-------------|
+| **+ Baseline** | Queues a baseline run. Starts immediately if nothing is running. |
+| **+ Proxy** | Opens the substrate dialog, then queues a proxy run. |
+| **+ Both** | Opens the substrate dialog, then queues baseline followed by proxy — useful for unattended overnight runs. |
+
+Proxy runs can optionally copy the substrate from a prior completed proxy run (the source is never modified).
+
+A **Queue panel** appears at the bottom of the sidebar whenever runs are pending, showing each item with a remove button and a Clear All option. Queued runs also appear in the run list with a slow-pulsing dot — clicking one selects it, and the live stream connection is already open waiting for it to start.
 
 ### Live run view
 

@@ -358,6 +358,7 @@ body {
 }
 
 .status-dot.running  { background: var(--accent); animation: pulse 1.2s infinite; }
+.status-dot.queued   { background: var(--text3); animation: pulse 2s infinite; }
 .status-dot.complete { background: var(--success); }
 .status-dot.error    { background: var(--error); }
 .status-dot.starting { background: var(--warning); }
@@ -620,3 +621,54 @@ body {
 .gap-8 { gap: 8px; }
 .gap-12 { gap: 12px; }
 .mb-16 { margin-bottom: 16px; }
+
+/* ── Queue panel ──────────────────────────────────────────────────────────── */
+
+.queue-panel {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.queue-panel-header {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+
+.queue-item {
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-item:last-child { border-bottom: none; }
+
+.queue-item-name {
+  color: var(--text2);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Header title — full text brightness for legibility ──────────────────── */
+
+.header-title {
+  color: var(--text);
+}

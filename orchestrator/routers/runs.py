@@ -2,16 +2,16 @@
 Runs router — start/stop runs, SSE live stream, completed run data.
 
 Run lifecycle:
-  POST   /api/runs                       start a run
-  GET    /api/runs                       list all runs (active + completed from disk)
+  POST   /api/runs                       enqueue a run (starts immediately if nothing active)
+  GET    /api/runs                       list all runs (active + queued + completed from disk)
   GET    /api/runs/{run_id}              get run status
-  DELETE /api/runs/{run_id}              cancel an active run
-  GET    /api/runs/{run_id}/stream       SSE event stream (active runs only)
+  DELETE /api/runs/{run_id}              cancel an active run, or dequeue a queued run
+  GET    /api/runs/{run_id}/stream       SSE event stream (connects immediately; events flow when run starts)
   GET    /api/runs/{run_id}/transcript   transcript .md for a completed run
   GET    /api/runs/{run_id}/events       all logged events from raw JSONL
 
-Run IDs are UUIDs for active runs, written into summary.json so they survive
-server restarts when the disk is scanned for completed runs.
+Run IDs are UUIDs for active/queued runs, written into summary.json so they
+survive server restarts when the disk is scanned for completed runs.
 """
 
 from __future__ import annotations
@@ -30,9 +30,11 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from core.run_queue import run_queue
+
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
-# In-memory registry: run_id → run record
+# In-memory registry: run_id → run record (active + queued)
 _active_runs: dict[str, dict] = {}
 
 
@@ -67,12 +69,66 @@ def _scan_completed_runs() -> list[dict]:
     return completed
 
 
+# ── Run execution (called by the queue) ────────────────────────────────────────
+
+async def _execute_run(run_id: str) -> None:
+    """Start the asyncio task for a run that has been dequeued."""
+    run_record = _active_runs.get(run_id)
+    if not run_record:
+        run_queue.notify_complete()
+        return
+
+    events_queue = run_record["events_queue"]
+
+    async def _event_callback(event_type: str, data: dict) -> None:
+        await events_queue.put({"type": event_type, **data})
+
+    async def _run_task() -> None:
+        from core.experiment import run_condition
+        try:
+            run_record["status"] = "running"
+            await events_queue.put({
+                "type": "run_started",
+                "run_id": run_id,
+                "condition": run_record["condition"],
+                "timestamp": run_record["timestamp"],
+            })
+            summary = await run_condition(
+                experiment=run_record["_exp"],
+                condition=run_record["condition"],
+                timestamp=run_record["timestamp"],
+                run_id=run_id,
+                db_source=run_record["db_source"],
+                event_callback=_event_callback,
+            )
+            run_record["status"] = "complete"
+            run_record["summary"] = summary
+            await events_queue.put({"type": "run_complete", "summary": summary})
+        except asyncio.CancelledError:
+            run_record["status"] = "cancelled"
+            await events_queue.put({"type": "cancelled"})
+        except Exception as exc:
+            logging.exception("Run %s failed", run_id)
+            run_record["status"] = "error"
+            run_record["error"] = str(exc)
+            await events_queue.put({"type": "error", "message": str(exc)})
+        finally:
+            await events_queue.put(None)  # sentinel — closes the SSE stream
+            run_queue.notify_complete()
+
+    task = asyncio.create_task(_run_task())
+    run_record["task"] = task
+
+
+# Wire the queue to the execution function
+run_queue.set_execute_fn(_execute_run)
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("")
 def list_runs():
-    """Return all runs: active (in memory) + completed (from disk)."""
-    # Active runs (exclude internal fields)
+    """Return all runs: queued + active (in memory) + completed (from disk)."""
     active_ids = set()
     active = []
     for run_id, r in _active_runs.items():
@@ -86,7 +142,6 @@ def list_runs():
             "status": r["status"],
         })
 
-    # Completed runs not already in active registry
     for r in _scan_completed_runs():
         if r.get("run_id") not in active_ids:
             active.append({
@@ -103,7 +158,7 @@ def list_runs():
 
 @router.post("", status_code=201)
 async def start_run(body: StartRunRequest):
-    """Start a new run. Returns run_id immediately; run executes in background."""
+    """Enqueue a run. Starts immediately if nothing is active, otherwise waits."""
     from store.experiments import get_experiment
 
     exp = get_experiment(body.experiment_id)
@@ -121,80 +176,48 @@ async def start_run(body: StartRunRequest):
         "condition": body.condition,
         "timestamp": timestamp,
         "db_source": body.db_source,
-        "status": "starting",
+        "status": "queued",
         "events_queue": events_queue,
+        "_exp": exp,            # kept for _execute_run; not exposed in API responses
         "task": None,
         "summary": None,
         "error": None,
     }
     _active_runs[run_id] = run_record
+    run_queue.enqueue(run_id)
 
-    async def _event_callback(event_type: str, data: dict) -> None:
-        await events_queue.put({"type": event_type, **data})
-
-    async def _run_task() -> None:
-        from core.experiment import run_condition
-        try:
-            run_record["status"] = "running"
-            await events_queue.put({
-                "type": "run_started",
-                "run_id": run_id,
-                "condition": body.condition,
-                "timestamp": timestamp,
-            })
-            summary = await run_condition(
-                experiment=exp,
-                condition=body.condition,
-                timestamp=timestamp,
-                run_id=run_id,
-                db_source=body.db_source,
-                event_callback=_event_callback,
-            )
-            run_record["status"] = "complete"
-            run_record["summary"] = summary
-            await events_queue.put({"type": "run_complete", "summary": summary})
-        except asyncio.CancelledError:
-            run_record["status"] = "cancelled"
-            await events_queue.put({"type": "cancelled"})
-        except Exception as exc:
-            logging.exception("Run %s failed", run_id)
-            run_record["status"] = "error"
-            run_record["error"] = str(exc)
-            await events_queue.put({"type": "error", "message": str(exc)})
-        finally:
-            await events_queue.put(None)  # sentinel — closes the SSE stream
-
-    task = asyncio.create_task(_run_task())
-    run_record["task"] = task
-
-    return {"run_id": run_id, "timestamp": timestamp, "status": "starting"}
+    return {"run_id": run_id, "timestamp": timestamp, "status": "queued"}
 
 
 @router.get("/{run_id}")
 def get_run(run_id: str):
-    """Get status for an active run. Completed runs are accessed via list."""
+    """Get status for an active or queued run."""
     if run_id in _active_runs:
         r = _active_runs[run_id]
-        return {k: v for k, v in r.items() if k not in ("events_queue", "task")}
+        return {k: v for k, v in r.items() if k not in ("events_queue", "task", "_exp")}
     raise HTTPException(status_code=404, detail="Run not found in active registry")
 
 
 @router.delete("/{run_id}", status_code=204)
 def cancel_run(run_id: str):
-    """Cancel an active run."""
+    """Cancel an active run, or remove a queued run before it starts."""
     if run_id not in _active_runs:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _active_runs[run_id]
-    task = run.get("task")
-    if task and not task.done():
-        task.cancel()
-        run["status"] = "cancelled"
+    if run["status"] == "queued":
+        run_queue.remove(run_id)
+        del _active_runs[run_id]
+    else:
+        task = run.get("task")
+        if task and not task.done():
+            task.cancel()
+            run["status"] = "cancelled"
     return None
 
 
 @router.get("/{run_id}/stream")
 async def stream_run(run_id: str):
-    """SSE stream of live events for an active run."""
+    """SSE stream for a run. Safe to connect before the run starts — events flow when it does."""
     if run_id not in _active_runs:
         raise HTTPException(status_code=404, detail="Run not in active registry")
 

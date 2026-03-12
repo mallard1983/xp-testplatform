@@ -12,7 +12,7 @@ export default function Sidebar({
   onRefresh,
 }) {
   const [launching, setLaunching] = useState(false)
-  const [startDialog, setStartDialog] = useState(null) // {experiment}
+  const [startDialog, setStartDialog] = useState(null) // {experiment, mode} mode: 'proxy'|'both'
 
   // Group runs by experiment name
   const runsByExp = {}
@@ -22,30 +22,56 @@ export default function Sidebar({
     runsByExp[key].push(run)
   }
 
-  async function handleStart(experiment, condition, dbSource = 'new') {
+  const queuedRuns = runs.filter(r => r.status === 'queued')
+
+  async function enqueue(experiment, condition, dbSource = 'new') {
+    const result = await startRun({
+      experiment_id: experiment.id,
+      condition,
+      db_source: dbSource,
+    })
+    const runId = result.run_id
+    onRunStarted(runId)
+    // Connect SSE now — it will sit waiting until the run is dequeued and starts
+    streamRun(
+      runId,
+      (event) => onEventReceived(runId, event),
+      () => onRefresh(),
+      () => onRefresh(),
+    )
+    return runId
+  }
+
+  async function handleBaseline(experiment) {
     setLaunching(true)
     try {
-      const result = await startRun({
-        experiment_id: experiment.id,
-        condition,
-        db_source: dbSource,
-      })
-      const runId = result.run_id
-      onRunStarted(runId)
-
-      // Connect SSE stream
-      streamRun(
-        runId,
-        (event) => onEventReceived(runId, event),
-        () => onRefresh(),
-        () => onRefresh(),
-      )
+      await enqueue(experiment, 'baseline')
     } catch (err) {
-      alert(`Failed to start run: ${err.message}`)
+      alert(`Failed to queue run: ${err.message}`)
+    } finally {
+      setLaunching(false)
+    }
+  }
+
+  async function handleProxyOrBoth(experiment, mode, dbSource) {
+    setLaunching(true)
+    try {
+      if (mode === 'both') {
+        await enqueue(experiment, 'baseline')
+      }
+      await enqueue(experiment, 'proxy', dbSource)
+    } catch (err) {
+      alert(`Failed to queue run: ${err.message}`)
     } finally {
       setLaunching(false)
       setStartDialog(null)
     }
+  }
+
+  async function handleDequeue(runId, e) {
+    e.stopPropagation()
+    await cancelRun(runId)
+    onRefresh()
   }
 
   async function handleCancel(runId, e) {
@@ -73,20 +99,27 @@ export default function Sidebar({
               <button
                 className="btn btn-ghost btn-sm flex-1"
                 disabled={launching}
-                onClick={() => handleStart(exp, 'baseline')}
+                onClick={() => handleBaseline(exp)}
               >
                 + Baseline
               </button>
               <button
                 className="btn btn-ghost btn-sm flex-1"
                 disabled={launching}
-                onClick={() => setStartDialog({ experiment: exp })}
+                onClick={() => setStartDialog({ experiment: exp, mode: 'proxy' })}
               >
                 + Proxy
               </button>
+              <button
+                className="btn btn-ghost btn-sm flex-1"
+                disabled={launching}
+                onClick={() => setStartDialog({ experiment: exp, mode: 'both' })}
+              >
+                + Both
+              </button>
             </div>
 
-            {/* Existing runs for this experiment */}
+            {/* Runs for this experiment */}
             {(runsByExp[exp.name] || []).map(run => (
               <RunItem
                 key={run.run_id}
@@ -94,6 +127,7 @@ export default function Sidebar({
                 selected={run.run_id === selectedRunId}
                 onSelect={() => onSelectRun(run.run_id)}
                 onCancel={handleCancel}
+                onDequeue={handleDequeue}
               />
             ))}
           </div>
@@ -109,12 +143,44 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Proxy start dialog — choose db source */}
+      {/* Queue panel */}
+      {queuedRuns.length > 0 && (
+        <div className="queue-panel">
+          <div className="queue-panel-header">
+            <span>Queue — {queuedRuns.length} pending</span>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={async () => {
+                for (const r of queuedRuns) await cancelRun(r.run_id)
+                onRefresh()
+              }}
+            >
+              Clear
+            </button>
+          </div>
+          {queuedRuns.map(r => (
+            <div key={r.run_id} className="queue-item">
+              <span className={`badge badge-${r.condition}`}>{r.condition}</span>
+              <span className="queue-item-name">{r.experiment_name}</span>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ marginLeft: 'auto', fontSize: 11 }}
+                onClick={(e) => handleDequeue(r.run_id, e)}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Proxy / Both start dialog */}
       {startDialog && (
         <ProxyStartDialog
           experiment={startDialog.experiment}
+          mode={startDialog.mode}
           runs={runs.filter(r => r.condition === 'proxy' && r.experiment_id === startDialog.experiment.id)}
-          onStart={(dbSource) => handleStart(startDialog.experiment, 'proxy', dbSource)}
+          onStart={(dbSource) => handleProxyOrBoth(startDialog.experiment, startDialog.mode, dbSource)}
           onClose={() => setStartDialog(null)}
         />
       )}
@@ -122,7 +188,7 @@ export default function Sidebar({
   )
 }
 
-function RunItem({ run, selected, onSelect, onCancel }) {
+function RunItem({ run, selected, onSelect, onCancel, onDequeue }) {
   const statusClass = run.status || 'complete'
   const date = run.timestamp
     ? run.timestamp.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5')
@@ -134,10 +200,6 @@ function RunItem({ run, selected, onSelect, onCancel }) {
       onClick={onSelect}
     >
       <div className="run-item-name">
-        <span className="status-dot" style={{ verticalAlign: 'middle' }}
-          title={run.status}
-          data-status={statusClass}
-        />
         <StatusDot status={statusClass} />
         <span className={`badge badge-${run.condition}`}>{run.condition}</span>
         {' '}
@@ -152,6 +214,15 @@ function RunItem({ run, selected, onSelect, onCancel }) {
           Stop
         </button>
       )}
+      {run.status === 'queued' && (
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ marginTop: 4, fontSize: 11 }}
+          onClick={(e) => onDequeue(run.run_id, e)}
+        >
+          Remove
+        </button>
+      )}
     </div>
   )
 }
@@ -160,23 +231,31 @@ function StatusDot({ status }) {
   return <span className={`status-dot ${status}`} style={{ marginRight: 6 }} />
 }
 
-function ProxyStartDialog({ experiment, runs, onStart, onClose }) {
+function ProxyStartDialog({ experiment, mode, runs, onStart, onClose }) {
   const [dbSource, setDbSource] = useState('new')
+  const isProxy = mode === 'proxy'
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div className="dialog" onClick={e => e.stopPropagation()}>
-        <div className="dialog-title">Start Proxy Run — {experiment.name}</div>
+        <div className="dialog-title">
+          {isProxy ? 'Queue Proxy Run' : 'Queue Both Runs'} — {experiment.name}
+        </div>
         <div className="dialog-body">
+          {!isProxy && (
+            <p className="text-muted text-small" style={{ marginBottom: 12 }}>
+              Baseline will be queued first, then Proxy.
+            </p>
+          )}
           <div className="form-group">
-            <label className="form-label">Substrate database</label>
+            <label className="form-label">Proxy substrate database</label>
             <select
               className="form-select"
               value={dbSource}
               onChange={e => setDbSource(e.target.value)}
             >
               <option value="new">New (clean substrate)</option>
-              {runs.map(r => (
+              {runs.filter(r => r.status === 'complete').map(r => (
                 <option key={r.run_id} value={r.timestamp}>
                   From run: {r.timestamp}
                 </option>
@@ -191,7 +270,9 @@ function ProxyStartDialog({ experiment, runs, onStart, onClose }) {
         </div>
         <div className="dialog-actions">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={() => onStart(dbSource)}>Start</button>
+          <button className="btn btn-primary" onClick={() => onStart(dbSource)}>
+            {isProxy ? 'Queue Proxy' : 'Queue Both'}
+          </button>
         </div>
       </div>
     </div>
