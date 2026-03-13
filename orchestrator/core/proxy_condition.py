@@ -244,6 +244,11 @@ async def run_proxy(
 
             interviewer_messages.append({"role": "assistant", "content": iv_question})
             interviewer_messages.append({"role": "user", "content": model_text})
+            # Keep interviewer history bounded: system prompt + last 40 turns (80 messages).
+            # The interviewer only needs recent context to ask good follow-up questions;
+            # an unbounded history will eventually exceed the model's context window.
+            if len(interviewer_messages) > 81:  # 1 system + 80 turn messages
+                interviewer_messages = interviewer_messages[:1] + interviewer_messages[-80:]
 
             # 6. Checkpoint
             if turn in checkpoint_turns:
