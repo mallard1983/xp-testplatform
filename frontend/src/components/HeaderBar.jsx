@@ -53,10 +53,10 @@ export default function HeaderBar({ run, liveEvents, replayStats, onOpenConfig, 
         <span className="header-stat-value">{formatNum(stats.totalTokens)}</span>
       </div>
 
-      {run.condition === 'baseline' && stats.turnTokens != null && (
+      {stats.currentContext != null && (
         <div className="header-stat">
           <span className="header-stat-label">Context</span>
-          <span className="header-stat-value">{formatNum(stats.turnTokens)}</span>
+          <span className="header-stat-value">{formatNum(stats.currentContext)}</span>
         </div>
       )}
 
@@ -107,7 +107,7 @@ function computeStats(run, liveEvents) {
   let turn = 0
   let turnLimit = run?.parameters?.turn_limit || 0
   let totalTokens = 0
-  let turnTokens = null   // context size (resets after compaction, baseline only)
+  let currentContext = null  // API-reported prompt_tokens from last Pass 2 call
   let compactionCount = 0
   let pass1Activations = 0
   let pass1Tokens = null
@@ -122,7 +122,7 @@ function computeStats(run, liveEvents) {
         turnLimit = ev.turn_limit || turnLimit
         const tok = ev.total_tokens
         if (tok) totalTokens = (tok.prompt || 0) + (tok.completion || 0)
-        if (ev.turn_tokens != null) turnTokens = ev.turn_tokens
+        if (ev.current_context != null) currentContext = ev.current_context
         if (ev.compaction_count != null) compactionCount = ev.compaction_count
         if (ev.pass1_activations != null) pass1Activations = ev.pass1_activations
         if (ev.pass1_tokens) pass1Tokens = (ev.pass1_tokens.prompt || 0) + (ev.pass1_tokens.completion || 0)
@@ -141,7 +141,7 @@ function computeStats(run, liveEvents) {
     if (run.pass2_tokens) pass2Tokens = (run.pass2_tokens.prompt || 0) + (run.pass2_tokens.completion || 0)
   }
 
-  return { turn, turnLimit, totalTokens, turnTokens, compactionCount, pass1Activations, pass1Tokens, pass2Tokens }
+  return { turn, turnLimit, totalTokens, currentContext, compactionCount, pass1Activations, pass1Tokens, pass2Tokens }
 }
 
 function formatNum(n) {

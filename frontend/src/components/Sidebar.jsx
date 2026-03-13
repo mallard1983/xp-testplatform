@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { startRun, cancelRun, streamRun } from '../api.js'
+import { startRun, cancelRun, finishRun, streamRun } from '../api.js'
 
 export default function Sidebar({
   runs,
@@ -80,6 +80,11 @@ export default function Sidebar({
     onRefresh()
   }
 
+  async function handleFinish(runId, e) {
+    e.stopPropagation()
+    await finishRun(runId)
+  }
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -127,6 +132,7 @@ export default function Sidebar({
                 selected={run.run_id === selectedRunId}
                 onSelect={() => onSelectRun(run.run_id)}
                 onCancel={handleCancel}
+                onFinish={handleFinish}
                 onDequeue={handleDequeue}
               />
             ))}
@@ -188,7 +194,7 @@ export default function Sidebar({
   )
 }
 
-function RunItem({ run, selected, onSelect, onCancel, onDequeue }) {
+function RunItem({ run, selected, onSelect, onCancel, onFinish, onDequeue }) {
   const statusClass = run.status || 'complete'
   const date = run.timestamp
     ? run.timestamp.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5')
@@ -206,13 +212,23 @@ function RunItem({ run, selected, onSelect, onCancel, onDequeue }) {
         <span style={{ fontSize: 11, color: 'var(--text2)' }}>{date}</span>
       </div>
       {run.status === 'running' && (
-        <button
-          className="btn btn-danger btn-sm"
-          style={{ marginTop: 4 }}
-          onClick={(e) => onCancel(run.run_id, e)}
-        >
-          Stop
-        </button>
+        <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          <button
+            className="btn btn-ghost btn-sm flex-1"
+            style={{ fontSize: 11 }}
+            onClick={(e) => onFinish(run.run_id, e)}
+            title="Stop after current turn and deliver closing prompt"
+          >
+            Finish
+          </button>
+          <button
+            className="btn btn-danger btn-sm flex-1"
+            onClick={(e) => onCancel(run.run_id, e)}
+            title="Cancel immediately and save partial run"
+          >
+            Stop
+          </button>
+        </div>
       )}
       {run.status === 'queued' && (
         <button

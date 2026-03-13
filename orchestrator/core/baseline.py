@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable, Awaitable
 
-from core.compaction import count_tokens, needs_compaction, run_compaction
+from core.compaction import needs_compaction, run_compaction
 from core.logger import RunLogger
 from core.search import web_search
 from core.tool_handler import baseline_tools
@@ -47,6 +47,8 @@ async def run_baseline(
     extra_mcp_tools: list[dict] | None = None,
     extra_tool_dispatch: dict[str, Callable[..., Awaitable[str]]] | None = None,
     on_turn_complete: Callable[..., Awaitable[None]] | None = None,
+    on_cancel: Callable[[dict], None] | None = None,
+    should_finish: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Run the full baseline condition.
@@ -94,8 +96,10 @@ async def run_baseline(
 
     test_messages.append({"role": "assistant", "content": opening_text})
 
+    last_prompt_tokens: int = opening_usage["prompt_tokens"]
+
     opening_stats = {
-        "turn_tokens": count_tokens(test_messages),
+        "current_context": last_prompt_tokens,
         "total_tokens": dict(total_tokens),
         "compaction_count": 0,
         "turn_limit": turn_limit,
@@ -111,85 +115,112 @@ async def run_baseline(
     ]
 
     # ── Main turn loop ────────────────────────────────────────────────────────
-    for turn in range(1, turn_limit + 1):
+    _partial_result: dict = {
+        "turns_completed": 0,
+        "compaction_events": compaction_events,
+        "total_tokens": dict(total_tokens),
+        "checkpoint_turns": completed_checkpoints,
+    }
 
-        # 1. Get interviewer question
-        logger.log_api_request(turn, "interviewer", interviewer_client.model_identifier,
-                               interviewer_messages)
+    try:
+        for turn in range(1, turn_limit + 1):
 
-        iv_response = await interviewer_client.chat(interviewer_messages)
-        iv_question = (iv_response["content"] or "").strip()
-        logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
-                                iv_question, [], iv_response["usage"])
+            # Check for graceful finish request (stop after previous turn)
+            if should_finish and should_finish():
+                break
 
-        # 2. Check compaction threshold
-        tokens_before = count_tokens(test_messages)
-        if needs_compaction(test_messages, context_window, compaction_threshold_fraction):
-            summary, test_messages, compact_usage = await run_compaction(
+            # 1. Get interviewer question
+            logger.log_api_request(turn, "interviewer", interviewer_client.model_identifier,
+                                   interviewer_messages)
+
+            iv_response = await interviewer_client.chat(interviewer_messages)
+            iv_question = (iv_response["content"] or "").strip()
+            logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
+                                    iv_question, [], iv_response["usage"])
+            if turn_pause_seconds > 0:
+                await asyncio.sleep(turn_pause_seconds)
+
+            # 2. Check compaction threshold
+            tokens_before = last_prompt_tokens
+            if needs_compaction(last_prompt_tokens, context_window, compaction_threshold_fraction):
+                summary, test_messages, compact_usage = await run_compaction(
+                    messages=test_messages,
+                    client=pass2_client,
+                    compaction_prompt=compaction_prompt,
+                    system_prompt=test_model_system_prompt,
+                    turn=turn - 1,
+                )
+                _accumulate(total_tokens, compact_usage)
+                compaction_events.append({"turn": turn, "tokens_before": tokens_before})
+                logger.log_compaction(turn, summary, tokens_before)
+                logger.transcript_compaction_note(turn)
+
+            # 3. Append interviewer question to test model messages
+            test_messages.append({"role": "user", "content": iv_question})
+
+            # 4. Call test model
+            logger.log_api_request(turn, "baseline", pass2_client.model_identifier,
+                                   test_messages, tools)
+
+            model_text, tool_events, model_usage = await pass2_client.run_with_tools(
                 messages=test_messages,
-                client=pass2_client,
-                compaction_prompt=compaction_prompt,
-                system_prompt=test_model_system_prompt,
-                turn=turn - 1,
+                tools=tools,
+                tool_dispatch=tool_dispatch,
             )
-            _accumulate(total_tokens, compact_usage)
-            compaction_events.append({"turn": turn, "tokens_before": tokens_before})
-            logger.log_compaction(turn, summary, tokens_before)
-            logger.transcript_compaction_note(turn)
+            _accumulate(total_tokens, model_usage)
+            last_prompt_tokens = model_usage["prompt_tokens"]
+            if turn_pause_seconds > 0:
+                await asyncio.sleep(turn_pause_seconds)
 
-        # 3. Append interviewer question to test model messages
-        test_messages.append({"role": "user", "content": iv_question})
+            for ev in tool_events:
+                logger.log_tool_call(turn, "baseline", ev["tool"], ev["args"],
+                                     ev["result"], ev["error"])
 
-        # 4. Call test model
-        logger.log_api_request(turn, "baseline", pass2_client.model_identifier,
-                               test_messages, tools)
+            logger.log_api_response(turn, "baseline", pass2_client.model_identifier,
+                                    model_text, [], model_usage)
 
-        model_text, tool_events, model_usage = await pass2_client.run_with_tools(
-            messages=test_messages,
-            tools=tools,
-            tool_dispatch=tool_dispatch,
-        )
-        _accumulate(total_tokens, model_usage)
+            # 5. Append response to test model messages
+            test_messages.append({"role": "assistant", "content": model_text})
 
-        for ev in tool_events:
-            logger.log_tool_call(turn, "baseline", ev["tool"], ev["args"],
-                                 ev["result"], ev["error"])
+            # 6. Log turn
+            turn_stats = {
+                "current_context": last_prompt_tokens,
+                "total_tokens": dict(total_tokens),
+                "compaction_count": len(compaction_events),
+                "turn_limit": turn_limit,
+            }
+            logger.log_turn_complete(turn, iv_question, model_text, model_usage, turn_stats)
+            logger.transcript_turn(turn, iv_question, model_text)
 
-        logger.log_api_response(turn, "baseline", pass2_client.model_identifier,
-                                model_text, [], model_usage)
+            # 7. Update interviewer history (sees the full back-and-forth)
+            interviewer_messages.append({"role": "assistant", "content": iv_question})
+            interviewer_messages.append({"role": "user", "content": model_text})
 
-        # 5. Append response to test model messages
-        test_messages.append({"role": "assistant", "content": model_text})
+            # 8. Checkpoint
+            if turn in checkpoint_turns:
+                logger.log_checkpoint(turn, model_text)
+                completed_checkpoints.append(turn)
 
-        # 6. Log turn
-        turn_stats = {
-            "turn_tokens": count_tokens(test_messages),
-            "total_tokens": dict(total_tokens),
-            "compaction_count": len(compaction_events),
-            "turn_limit": turn_limit,
-        }
-        logger.log_turn_complete(turn, iv_question, model_text, model_usage, turn_stats)
-        logger.transcript_turn(turn, iv_question, model_text)
+            # Turn is fully committed — update partial result before any awaits
+            _partial_result = {
+                "turns_completed": turn,
+                "compaction_events": list(compaction_events),
+                "total_tokens": dict(total_tokens),
+                "checkpoint_turns": list(completed_checkpoints),
+            }
 
-        # 7. Update interviewer history (sees the full back-and-forth)
-        interviewer_messages.append({"role": "assistant", "content": iv_question})
-        interviewer_messages.append({"role": "user", "content": model_text})
+            # 9. Notify streaming callback
+            if on_turn_complete:
+                await on_turn_complete(turn, iv_question, model_text, turn_stats)
 
-        # 8. Checkpoint
-        if turn in checkpoint_turns:
-            logger.log_checkpoint(turn, model_text)
-            completed_checkpoints.append(turn)
 
-        # 9. Notify streaming callback
-        if on_turn_complete:
-            await on_turn_complete(turn, iv_question, model_text, turn_stats)
-
-        # 10. Rate limit pause (skip on last turn to avoid unnecessary wait)
-        if turn < turn_limit and turn_pause_seconds > 0:
-            await asyncio.sleep(turn_pause_seconds)
+    except asyncio.CancelledError:
+        if on_cancel:
+            on_cancel(_partial_result)
+        raise
 
     return {
-        "turns_completed": turn_limit,
+        "turns_completed": _partial_result["turns_completed"],
         "compaction_events": compaction_events,
         "total_tokens": total_tokens,
         "checkpoint_turns": completed_checkpoints,

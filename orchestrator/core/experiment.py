@@ -19,6 +19,7 @@ so that it can be applied identically regardless of condition.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -83,6 +84,7 @@ async def run_condition(
     db_source: str = "new",
     substrate_base_url: str = "http://substrate-api:8000",
     event_callback: Callable[[str, dict], Awaitable[None]] | None = None,
+    should_finish: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Run one condition (baseline or proxy) for the given experiment.
@@ -173,43 +175,88 @@ async def run_condition(
             })
 
     # ── Run the condition loop ────────────────────────────────────────────────
-    if condition == "baseline":
-        run_result = await run_baseline(
-            pass2_client=pass2_client,
-            interviewer_client=interviewer_client,
-            test_model_system_prompt=test_model_system,
-            interviewer_system_prompt=interviewer_system,
-            opening_question=opening_question,
-            closing_prompt=closing_prompt,
-            compaction_prompt=compaction_prompt,
-            context_window=context_window,
-            compaction_threshold_fraction=compaction_threshold,
-            turn_limit=turn_limit,
-            turn_pause_seconds=turn_pause,
-            checkpoint_turns=checkpoint_turns,
-            logger=logger,
-            on_turn_complete=_on_turn,
+    _cancelled_result: dict | None = None
+
+    def _on_cancel(partial: dict) -> None:
+        nonlocal _cancelled_result
+        _cancelled_result = partial
+
+    try:
+        if condition == "baseline":
+            run_result = await run_baseline(
+                pass2_client=pass2_client,
+                interviewer_client=interviewer_client,
+                test_model_system_prompt=test_model_system,
+                interviewer_system_prompt=interviewer_system,
+                opening_question=opening_question,
+                closing_prompt=closing_prompt,
+                compaction_prompt=compaction_prompt,
+                context_window=context_window,
+                compaction_threshold_fraction=compaction_threshold,
+                turn_limit=turn_limit,
+                turn_pause_seconds=turn_pause,
+                checkpoint_turns=checkpoint_turns,
+                logger=logger,
+                on_turn_complete=_on_turn,
+                on_cancel=_on_cancel,
+                should_finish=should_finish,
+            )
+        else:
+            pass1_client = _resolve_client(experiment.pass1_model_id)
+            run_result = await run_proxy(
+                pass1_client=pass1_client,
+                pass2_client=pass2_client,
+                interviewer_client=interviewer_client,
+                substrate_client=substrate_client,
+                test_model_system_prompt=test_model_system,
+                interviewer_system_prompt=interviewer_system,
+                pass1_system_prompt=pass1_system,
+                opening_question=opening_question,
+                closing_prompt=closing_prompt,
+                context_window=context_window,
+                pass1_activation_fraction=pass1_activation,
+                turn_limit=turn_limit,
+                turn_pause_seconds=turn_pause,
+                checkpoint_turns=checkpoint_turns,
+                logger=logger,
+                on_turn_complete=_on_turn,
+                on_cancel=_on_cancel,
+                should_finish=should_finish,
+            )
+    except asyncio.CancelledError:
+        # Write a partial summary so the run appears in the sidebar after restart
+        partial = _cancelled_result or {"turns_completed": 0}
+        pass2_model_entry = get_model(experiment.pass2_model_id)
+        interviewer_model_entry = get_model(experiment.interviewer_model_id)
+        pass1_model_entry = (
+            get_model(experiment.pass1_model_id) if condition == "proxy" else None
         )
-    else:
-        pass1_client = _resolve_client(experiment.pass1_model_id)
-        run_result = await run_proxy(
-            pass1_client=pass1_client,
-            pass2_client=pass2_client,
-            interviewer_client=interviewer_client,
-            substrate_client=substrate_client,
-            test_model_system_prompt=test_model_system,
-            interviewer_system_prompt=interviewer_system,
-            pass1_system_prompt=pass1_system,
-            opening_question=opening_question,
-            closing_prompt=closing_prompt,
-            context_window=context_window,
-            pass1_activation_fraction=pass1_activation,
-            turn_limit=turn_limit,
-            turn_pause_seconds=turn_pause,
-            checkpoint_turns=checkpoint_turns,
-            logger=logger,
-            on_turn_complete=_on_turn,
-        )
+        cancelled_summary = {
+            "run_id": run_id or timestamp,
+            "experiment_id": experiment.id,
+            "experiment_name": experiment.name,
+            "condition": condition,
+            "timestamp": timestamp,
+            "status": "cancelled",
+            "pass1_model": pass1_model_entry.model_identifier if pass1_model_entry else None,
+            "pass2_model": pass2_model_entry.model_identifier if pass2_model_entry else None,
+            "interviewer_model": interviewer_model_entry.model_identifier if interviewer_model_entry else None,
+            "parameters": {
+                "turn_limit": turn_limit,
+                "context_window": context_window,
+                "compaction_threshold_fraction": compaction_threshold,
+                "pass1_activation_fraction": pass1_activation,
+                "turn_pause_seconds": turn_pause,
+                "checkpoint_turns": checkpoint_turns,
+            },
+            "database_source": db_source if condition == "proxy" else None,
+            **partial,
+            "artifacts": {},
+        }
+        summary_path = logger.run_dir / "summary.json"
+        summary_path.write_text(json.dumps(cancelled_summary, indent=2))
+        logger.transcript_cancelled(partial.get("turns_completed", 0))
+        raise
 
     # ── Deliver closing prompt ────────────────────────────────────────────────
     # Delivered as a standalone exchange (not appended to the turn loop history)

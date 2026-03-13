@@ -54,6 +54,8 @@ Interviewer ──► Orchestrator
 
 Token accounting is intentional: **the interviewer is not counted** — it stands in for a human user and its tokens are not a cost of the system under test. Baseline counts test model tokens only. Proxy counts Pass 1 + Pass 2 tokens separately, since Pass 1 at ~100K tokens per activation adds up quickly and needs to be visible alongside Pass 2.
 
+All token counts use the `prompt_tokens` and `completion_tokens` values returned directly by the API — not local estimates. The **Context** stat shown in the header is the `prompt_tokens` reported by the API on the last Pass 2 call, which is the ground-truth measure of what the model actually processed that turn. This is also the value used to decide when compaction or Pass 1 activation fires.
+
 ---
 
 ## Architecture
@@ -163,7 +165,14 @@ A **Queue panel** appears at the bottom of the sidebar whenever runs are pending
 
 ### Live run view
 
-While a run is active the main panel shows two tabs:
+While a run is active, two controls appear in the run item:
+
+| Button | What it does |
+|--------|-------------|
+| **Finish** | Stops after the current turn completes, delivers the closing prompt, and writes all artifacts. Use this for a clean early exit. |
+| **Stop** | Cancels immediately and saves a partial run. No closing prompt is delivered. |
+
+The main panel shows two tabs:
 
 - **Chat** — the conversation as it unfolds, turn by turn, starting from the opening exchange (Turn 0). The interviewer's questions appear in green, the model's responses in blue, compaction events as inline notes.
 - **Detail** — the raw event stream: every API request, response, tool call, and timing event as it arrives.
@@ -174,7 +183,7 @@ The header bar shows live stats updated after each turn:
 |------|----------|-------|
 | Turn / turn limit | ✓ | ✓ |
 | Total tokens | ✓ | ✓ |
-| Context (tokens since last compaction) | ✓ | — |
+| Context (API-reported prompt tokens, last Pass 2 call) | ✓ | ✓ |
 | Compactions | ✓ (when > 0) | — |
 | P1 Activations | — | ✓ |
 | P1 Tokens | — | ✓ |
@@ -191,7 +200,7 @@ When you select a completed run, the Chat tab loads all events and shows the ful
 - Click anywhere on the progress bar to jump to any turn
 - **▶ Show All** exits replay and returns to the full conversation
 
-While scrubbing, the header bar updates to show the stats *as they were at that turn* — total tokens, context size, compaction count, P1/P2 tokens — so you can watch exactly how costs accumulated across the run.
+While scrubbing, the header bar updates to show the stats *as they were at that turn* — total tokens, context size (API-reported), compaction count, P1/P2 tokens — so you can watch exactly how costs accumulated across the run.
 
 ---
 

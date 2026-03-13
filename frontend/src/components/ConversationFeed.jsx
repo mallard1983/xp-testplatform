@@ -225,7 +225,7 @@ function extractStatsFromTurn(events, turnIdx) {
     turn: ev.turn ?? 0,
     turnLimit: ev.turn_limit,
     totalTokens: ev.total_tokens,
-    turnTokens: ev.turn_tokens,
+    currentContext: ev.current_context,
     compactionCount: ev.compaction_count,
     pass1Activations: ev.pass1_activations,
     pass1Tokens: ev.pass1_tokens,

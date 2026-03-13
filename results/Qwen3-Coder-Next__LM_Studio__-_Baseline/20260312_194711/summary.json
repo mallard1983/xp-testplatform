@@ -1,0 +1,34 @@
+{
+  "run_id": "68022971-12cb-4599-beef-30fa1478d37c",
+  "experiment_id": "a908c60b-d3ea-4cd1-b0ac-22036e2ef700",
+  "experiment_name": "Qwen3-Coder-Next (LM Studio) - Baseline",
+  "condition": "baseline",
+  "timestamp": "20260312_194711",
+  "pass1_model": null,
+  "pass2_model": "qwen/qwen3-coder-next",
+  "interviewer_model": "qwen/qwen3-coder-next",
+  "parameters": {
+    "turn_limit": 100,
+    "context_window": 256000,
+    "compaction_threshold_fraction": 0.8,
+    "pass1_activation_fraction": 0.5,
+    "turn_pause_seconds": 5,
+    "checkpoint_turns": [
+      50,
+      100,
+      150,
+      200
+    ]
+  },
+  "database_source": null,
+  "turns_completed": 38,
+  "compaction_events": [],
+  "total_tokens": {
+    "prompt": 1753714,
+    "completion": 71621
+  },
+  "checkpoint_turns": [],
+  "artifacts": {
+    "closing": "artifacts/closing_baseline.md"
+  }
+}

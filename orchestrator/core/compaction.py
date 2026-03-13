@@ -47,10 +47,10 @@ def count_tokens(messages: list[dict]) -> int:
     return total
 
 
-def needs_compaction(messages: list[dict], context_window: int, threshold_fraction: float) -> bool:
-    """Return True if the message array has exceeded the compaction threshold."""
+def needs_compaction(token_count: int, context_window: int, threshold_fraction: float) -> bool:
+    """Return True if the API-reported prompt token count has exceeded the compaction threshold."""
     threshold = int(context_window * threshold_fraction)
-    return count_tokens(messages) >= threshold
+    return token_count >= threshold
 
 
 # ── Compaction execution ──────────────────────────────────────────────────────

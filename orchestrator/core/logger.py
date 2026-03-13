@@ -134,6 +134,13 @@ class RunLogger:
         note = f"*[Compaction event at turn {turn} — context window condensed]*\n\n"
         self._append_transcript(note)
 
+    def transcript_cancelled(self, turns_completed: int):
+        note = (
+            f"\n---\n\n"
+            f"*[Run cancelled after turn {turns_completed}]*\n"
+        )
+        self._append_transcript(note)
+
     # ── Artifact paths ────────────────────────────────────────────────────────
 
     @property

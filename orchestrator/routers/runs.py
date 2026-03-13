@@ -87,6 +87,7 @@ async def _execute_run(run_id: str) -> None:
         from core.experiment import run_condition
         try:
             run_record["status"] = "running"
+            run_record["finish_requested"] = False
             await events_queue.put({
                 "type": "run_started",
                 "run_id": run_id,
@@ -100,6 +101,7 @@ async def _execute_run(run_id: str) -> None:
                 run_id=run_id,
                 db_source=run_record["db_source"],
                 event_callback=_event_callback,
+                should_finish=lambda: run_record.get("finish_requested", False),
             )
             run_record["status"] = "complete"
             run_record["summary"] = summary
@@ -150,7 +152,7 @@ def list_runs():
                 "experiment_name": r.get("experiment_name"),
                 "condition": r.get("condition"),
                 "timestamp": r.get("timestamp"),
-                "status": "complete",
+                "status": r.get("status", "complete"),
             })
 
     return active
@@ -212,6 +214,17 @@ def cancel_run(run_id: str):
         if task and not task.done():
             task.cancel()
             run["status"] = "cancelled"
+    return None
+
+
+@router.patch("/{run_id}", status_code=204)
+def finish_run(run_id: str):
+    """Signal a running run to stop after the current turn and deliver the closing prompt."""
+    if run_id not in _active_runs:
+        raise HTTPException(status_code=404, detail="Run not found")
+    run = _active_runs[run_id]
+    if run["status"] == "running":
+        run["finish_requested"] = True
     return None
 
 

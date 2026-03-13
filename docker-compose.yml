@@ -90,6 +90,9 @@ services:
       NEO4J_CONTAINER_NAME: xp-testplatform-neo4j-1
       DATA_DIR: /app/data
       RESULTS_DIR: /app/results
+      # Per-request timeout for model calls. Local large models with extended
+      # thinking can take 10+ minutes per turn at depth — set headroom accordingly.
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-7200}
     volumes:
       - ./data:/app/data
       - ./results:/app/results

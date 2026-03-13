@@ -22,7 +22,7 @@ export const getModels = () => req('GET', '/models')
 export const createModel = (data) => req('POST', '/models', data)
 export const updateModel = (id, data) => req('PATCH', `/models/${id}`, data)
 export const deleteModel = (id) => req('DELETE', `/models/${id}`)
-export const setModelKey = (id, key) => req('PUT', `/models/${id}/key`, { api_key: key })
+export const setModelKey = (id, key) => req('PUT', `/models/${id}/key`, { key })
 
 // ── Prompts ────────────────────────────────────────────────────────────────
 export const getDefaultPrompts = () => req('GET', '/prompts/defaults')
@@ -53,6 +53,7 @@ export const updateSearchConfig = (data) => req('PUT', '/config/search', data)
 export const getRuns = () => req('GET', '/runs')
 export const startRun = (data) => req('POST', '/runs', data)
 export const cancelRun = (id) => req('DELETE', `/runs/${id}`)
+export const finishRun = (id) => req('PATCH', `/runs/${id}`)
 export const getTranscript = (id) => fetch(`${BASE}/runs/${id}/transcript`).then(r => r.text())
 export const getEvents = (id) => req('GET', `/runs/${id}/events`)
 

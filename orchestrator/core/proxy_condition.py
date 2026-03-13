@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 from typing import Callable, Awaitable
 
-from core.compaction import count_tokens
 from core.logger import RunLogger
 from core.pass1 import run_pass1, extract_context_block, has_context
 from core.pass2 import run_pass2
@@ -50,6 +49,8 @@ async def run_proxy(
     extra_mcp_tools: list[dict] | None = None,
     extra_tool_dispatch: dict[str, Callable[..., Awaitable[str]]] | None = None,
     on_turn_complete: Callable[..., Awaitable[None]] | None = None,
+    on_cancel: Callable[[dict], None] | None = None,
+    should_finish: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Run the full proxy condition.
@@ -100,7 +101,10 @@ async def run_proxy(
 
     proxy_history.append({"role": "assistant", "content": opening_text})
 
+    last_p2_prompt_tokens: int = opening_usage["prompt_tokens"]
+
     opening_stats = {
+        "current_context": last_p2_prompt_tokens,
         "total_tokens": dict(total_tokens),
         "pass1_tokens": dict(pass1_tokens),
         "pass2_tokens": dict(pass2_tokens),
@@ -123,118 +127,154 @@ async def run_proxy(
     ]
 
     # ── Main turn loop ────────────────────────────────────────────────────────
-    for turn in range(1, turn_limit + 1):
+    _partial_result: dict = {
+        "turns_completed": 0,
+        "pass1_activations": pass1_activations,
+        "total_tokens": dict(total_tokens),
+        "pass1_tokens": dict(pass1_tokens),
+        "pass2_tokens": dict(pass2_tokens),
+        "checkpoint_turns": completed_checkpoints,
+    }
 
-        # 1. Get interviewer question
-        logger.log_api_request(turn, "interviewer", interviewer_client.model_identifier,
-                               interviewer_messages)
-        iv_response = await interviewer_client.chat(interviewer_messages)
-        iv_question = (iv_response["content"] or "").strip()
-        logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
-                                iv_question, [], iv_response["usage"])
+    try:
+        for turn in range(1, turn_limit + 1):
 
-        # 2. Build current message array for this turn
-        current_messages = proxy_history + [{"role": "user", "content": iv_question}]
-        token_count = count_tokens(current_messages)
+            # Check for graceful finish request (stop after previous turn)
+            if should_finish and should_finish():
+                break
 
-        # 3. Pass 1 activation check
-        if token_count < activation_threshold:
-            # Below threshold: pass straight through to Pass 2 with full history
-            logger.log_api_request(turn, "pass2", pass2_client.model_identifier,
-                                   current_messages, tools)
-            model_text, tool_events, model_usage = await pass2_client.run_with_tools(
-                messages=current_messages,
-                tools=tools,
-                tool_dispatch=tool_dispatch,
-            )
-            _accumulate(total_tokens, model_usage)
-            _accumulate(pass2_tokens, model_usage)
-            for ev in tool_events:
-                logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
-                                     ev["result"], ev["error"])
-            logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
-                                    model_text, [], model_usage)
+            # 1. Get interviewer question
+            logger.log_api_request(turn, "interviewer", interviewer_client.model_identifier,
+                                   interviewer_messages)
+            iv_response = await interviewer_client.chat(interviewer_messages)
+            iv_question = (iv_response["content"] or "").strip()
+            logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
+                                    iv_question, [], iv_response["usage"])
+            if turn_pause_seconds > 0:
+                await asyncio.sleep(turn_pause_seconds)
 
-        else:
-            # Above threshold: activate Pass 1
-            pass1_activations += 1
-            logger.log_api_request(turn, "pass1", pass1_client.model_identifier,
-                                   current_messages, None)
+            # 2. Build current message array for this turn
+            current_messages = proxy_history + [{"role": "user", "content": iv_question}]
 
-            pass1_output, pass1_usage = await run_pass1(
-                messages=current_messages,
-                client=pass1_client,
-                substrate_client=substrate_client,
-                pass1_system_prompt=pass1_system_prompt,
-                tool_budget=pass1_tool_budget,
-            )
-            _accumulate(total_tokens, pass1_usage)
-            _accumulate(pass1_tokens, pass1_usage)
+            # 3. Pass 1 activation check
+            if last_p2_prompt_tokens < activation_threshold:
+                # Below threshold: pass straight through to Pass 2 with full history
+                logger.log_api_request(turn, "pass2", pass2_client.model_identifier,
+                                       current_messages, tools)
+                model_text, tool_events, model_usage = await pass2_client.run_with_tools(
+                    messages=current_messages,
+                    tools=tools,
+                    tool_dispatch=tool_dispatch,
+                )
+                _accumulate(total_tokens, model_usage)
+                _accumulate(pass2_tokens, model_usage)
+                last_p2_prompt_tokens = model_usage["prompt_tokens"]
+                if turn_pause_seconds > 0:
+                    await asyncio.sleep(turn_pause_seconds)
+                for ev in tool_events:
+                    logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
+                                         ev["result"], ev["error"])
+                logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
+                                        model_text, [], model_usage)
 
-            context_block = extract_context_block(pass1_output)
-            logger.log_api_response(turn, "pass1", pass1_client.model_identifier,
-                                    pass1_output, [], pass1_usage)
+            else:
+                # Above threshold: activate Pass 1
+                pass1_activations += 1
+                logger.log_api_request(turn, "pass1", pass1_client.model_identifier,
+                                       current_messages, None)
 
-            # Pass 2 with injected context
-            logger.log_api_request(turn, "pass2", pass2_client.model_identifier, [], tools)
-            model_text, tool_events, model_usage = await run_pass2(
-                current_question=iv_question,
-                pass1_output=pass1_output,
-                client=pass2_client,
-                test_model_system_prompt=test_model_system_prompt,
-                tools=tools,
-                tool_dispatch=tool_dispatch,
-            )
-            _accumulate(total_tokens, model_usage)
-            _accumulate(pass2_tokens, model_usage)
-            for ev in tool_events:
-                logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
-                                     ev["result"], ev["error"])
-            logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
-                                    model_text, [], model_usage)
+                pass1_output, pass1_usage = await run_pass1(
+                    messages=current_messages,
+                    client=pass1_client,
+                    substrate_client=substrate_client,
+                    pass1_system_prompt=pass1_system_prompt,
+                    tool_budget=pass1_tool_budget,
+                )
+                _accumulate(total_tokens, pass1_usage)
+                _accumulate(pass1_tokens, pass1_usage)
 
-        # 4. Log turn
-        turn_stats = {
-            "total_tokens": dict(total_tokens),
-            "pass1_tokens": dict(pass1_tokens),
-            "pass2_tokens": dict(pass2_tokens),
-            "pass1_activations": pass1_activations,
-            "turn_limit": turn_limit,
-        }
-        logger.log_turn_complete(turn, iv_question, model_text, model_usage, turn_stats)
-        logger.transcript_turn(turn, iv_question, model_text)
+                context_block = extract_context_block(pass1_output)
+                logger.log_api_response(turn, "pass1", pass1_client.model_identifier,
+                                        pass1_output, [], pass1_usage)
+                if turn_pause_seconds > 0:
+                    await asyncio.sleep(turn_pause_seconds)
 
-        # 5. Update histories
-        proxy_history.append({"role": "user", "content": iv_question})
-        proxy_history.append({"role": "assistant", "content": model_text})
+                # Pass 2 with injected context
+                logger.log_api_request(turn, "pass2", pass2_client.model_identifier, [], tools)
+                model_text, tool_events, model_usage = await run_pass2(
+                    current_question=iv_question,
+                    pass1_output=pass1_output,
+                    client=pass2_client,
+                    test_model_system_prompt=test_model_system_prompt,
+                    tools=tools,
+                    tool_dispatch=tool_dispatch,
+                )
+                _accumulate(total_tokens, model_usage)
+                _accumulate(pass2_tokens, model_usage)
+                last_p2_prompt_tokens = model_usage["prompt_tokens"]
+                for ev in tool_events:
+                    logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
+                                         ev["result"], ev["error"])
+                logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
+                                        model_text, [], model_usage)
+                if turn_pause_seconds > 0:
+                    await asyncio.sleep(turn_pause_seconds)
 
-        interviewer_messages.append({"role": "assistant", "content": iv_question})
-        interviewer_messages.append({"role": "user", "content": model_text})
+            # 4. Log turn
+            turn_stats = {
+                "current_context": last_p2_prompt_tokens,
+                "total_tokens": dict(total_tokens),
+                "pass1_tokens": dict(pass1_tokens),
+                "pass2_tokens": dict(pass2_tokens),
+                "pass1_activations": pass1_activations,
+                "turn_limit": turn_limit,
+            }
+            logger.log_turn_complete(turn, iv_question, model_text, model_usage, turn_stats)
+            logger.transcript_turn(turn, iv_question, model_text)
 
-        # 6. Notify streaming callback
-        if on_turn_complete:
-            await on_turn_complete(turn, iv_question, model_text, turn_stats)
+            # 5. Update histories
+            proxy_history.append({"role": "user", "content": iv_question})
+            proxy_history.append({"role": "assistant", "content": model_text})
 
-        # 7. Async write-back (fire and forget — does not block next turn)
-        pending_writes.append(asyncio.create_task(
-            _write_exchange(substrate_client, turn, iv_question, model_text)
-        ))
+            interviewer_messages.append({"role": "assistant", "content": iv_question})
+            interviewer_messages.append({"role": "user", "content": model_text})
 
-        # 8. Checkpoint
-        if turn in checkpoint_turns:
-            logger.log_checkpoint(turn, model_text)
-            completed_checkpoints.append(turn)
+            # 6. Checkpoint
+            if turn in checkpoint_turns:
+                logger.log_checkpoint(turn, model_text)
+                completed_checkpoints.append(turn)
 
-        # 9. Rate limit pause
-        if turn < turn_limit and turn_pause_seconds > 0:
-            await asyncio.sleep(turn_pause_seconds)
+            # Turn is fully committed — update partial result before any awaits
+            _partial_result = {
+                "turns_completed": turn,
+                "pass1_activations": pass1_activations,
+                "total_tokens": dict(total_tokens),
+                "pass1_tokens": dict(pass1_tokens),
+                "pass2_tokens": dict(pass2_tokens),
+                "checkpoint_turns": list(completed_checkpoints),
+            }
+
+            # 7. Notify streaming callback
+            if on_turn_complete:
+                await on_turn_complete(turn, iv_question, model_text, turn_stats)
+
+            # 8. Async write-back (fire and forget — does not block next turn)
+            pending_writes.append(asyncio.create_task(
+                _write_exchange(substrate_client, turn, iv_question, model_text)
+            ))
+
+
+    except asyncio.CancelledError:
+        if on_cancel:
+            on_cancel(_partial_result)
+        raise
 
     # Allow pending writes to complete (best effort — don't block on failures)
     if pending_writes:
         await asyncio.gather(*pending_writes, return_exceptions=True)
 
     return {
-        "turns_completed": turn_limit,
+        "turns_completed": _partial_result["turns_completed"],
         "pass1_activations": pass1_activations,
         "total_tokens": total_tokens,
         "pass1_tokens": pass1_tokens,
