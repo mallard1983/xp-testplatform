@@ -24,7 +24,8 @@ class CreateExperimentRequest(BaseModel):
     context_window: int | None = None
     compaction_threshold_fraction: float | None = None
     pass1_activation_fraction: float | None = None
-    turn_pause_seconds: int | None = None
+    turn_pause_min_seconds: float | None = None
+    turn_pause_max_seconds: float | None = None
     search_enabled: bool | None = None
 
 
@@ -43,7 +44,8 @@ class UpdateExperimentRequest(BaseModel):
     context_window: int | None = None
     compaction_threshold_fraction: float | None = None
     pass1_activation_fraction: float | None = None
-    turn_pause_seconds: int | None = None
+    turn_pause_min_seconds: float | None = None
+    turn_pause_max_seconds: float | None = None
     search_enabled: bool | None = None
 
 

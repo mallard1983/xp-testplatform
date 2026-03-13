@@ -21,6 +21,7 @@ The closing prompt is delivered after turn 200 by the caller (experiment.py).
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Callable, Awaitable
 
 from core.compaction import needs_compaction, run_compaction
@@ -41,7 +42,8 @@ async def run_baseline(
     context_window: int,
     compaction_threshold_fraction: float,
     turn_limit: int,
-    turn_pause_seconds: float,
+    turn_pause_min_seconds: float,
+    turn_pause_max_seconds: float,
     checkpoint_turns: list[int],
     logger: RunLogger,
     extra_mcp_tools: list[dict] | None = None,
@@ -96,10 +98,13 @@ async def run_baseline(
 
     test_messages.append({"role": "assistant", "content": opening_text})
 
-    last_prompt_tokens: int = opening_usage["prompt_tokens"]
+    last_prompt_tokens: int = opening_usage.get("last_prompt_tokens", opening_usage["prompt_tokens"])
 
+    compaction_threshold = int(context_window * compaction_threshold_fraction)
     opening_stats = {
         "current_context": last_prompt_tokens,
+        "context_window": context_window,
+        "compaction_threshold": compaction_threshold,
         "total_tokens": dict(total_tokens),
         "compaction_count": 0,
         "turn_limit": turn_limit,
@@ -137,8 +142,8 @@ async def run_baseline(
             iv_question = (iv_response["content"] or "").strip()
             logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
                                     iv_question, [], iv_response["usage"])
-            if turn_pause_seconds > 0:
-                await asyncio.sleep(turn_pause_seconds)
+            if turn_pause_min_seconds > 0:
+                await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
             # 2. Check compaction threshold
             tokens_before = last_prompt_tokens
@@ -168,9 +173,9 @@ async def run_baseline(
                 tool_dispatch=tool_dispatch,
             )
             _accumulate(total_tokens, model_usage)
-            last_prompt_tokens = model_usage["prompt_tokens"]
-            if turn_pause_seconds > 0:
-                await asyncio.sleep(turn_pause_seconds)
+            last_prompt_tokens = model_usage.get("last_prompt_tokens", model_usage["prompt_tokens"])
+            if turn_pause_min_seconds > 0:
+                await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
             for ev in tool_events:
                 logger.log_tool_call(turn, "baseline", ev["tool"], ev["args"],
@@ -185,6 +190,8 @@ async def run_baseline(
             # 6. Log turn
             turn_stats = {
                 "current_context": last_prompt_tokens,
+                "context_window": context_window,
+                "compaction_threshold": compaction_threshold,
                 "total_tokens": dict(total_tokens),
                 "compaction_count": len(compaction_events),
                 "turn_limit": turn_limit,
@@ -219,11 +226,16 @@ async def run_baseline(
             on_cancel(_partial_result)
         raise
 
+    except Exception as exc:
+        logger.log_error(_partial_result.get("turns_completed"), str(exc))
+        raise
+
     return {
         "turns_completed": _partial_result["turns_completed"],
         "compaction_events": compaction_events,
         "total_tokens": total_tokens,
         "checkpoint_turns": completed_checkpoints,
+        "final_history": test_messages,
     }
 
 

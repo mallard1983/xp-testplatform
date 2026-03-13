@@ -10,6 +10,7 @@ Handles:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, Callable, Awaitable
@@ -19,6 +20,9 @@ import httpx
 # Default timeout in seconds. Increase via LLM_TIMEOUT_SECONDS env var for slow local models.
 _DEFAULT_TIMEOUT = float(os.environ.get("LLM_TIMEOUT_SECONDS", "600"))
 
+_USER_AGENT = "XP-TestPlatform/1.0"
+_MAX_RETRIES = 3
+
 
 class OllamaClient:
     def __init__(self, endpoint_url: str, model_identifier: str, api_key: str | None = None):
@@ -27,7 +31,7 @@ class OllamaClient:
         self.api_key = api_key
 
     def _headers(self) -> dict:
-        h = {"Content-Type": "application/json"}
+        h = {"Content-Type": "application/json", "User-Agent": _USER_AGENT}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
         return h
@@ -55,13 +59,66 @@ class OllamaClient:
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.post(
-                f"{self.endpoint_url}/v1/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-        resp.raise_for_status()
+        resp = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    resp = await client.post(
+                        f"{self.endpoint_url}/v1/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("Retry-After", 30))
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(retry_after)
+                        continue
+                    raise RuntimeError(
+                        f"Rate limited (HTTP 429) after {_MAX_RETRIES + 1} attempts "
+                        f"[model={self.model_identifier}]"
+                    )
+
+                if resp.status_code >= 500:
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(5 * (attempt + 1))
+                        continue
+                    raise RuntimeError(
+                        f"HTTP {resp.status_code} server error "
+                        f"[model={self.model_identifier}]: {resp.text[:300]} "
+                        f"— {_MAX_RETRIES} retries exhausted"
+                    )
+
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise RuntimeError(
+                        f"HTTP {exc.response.status_code} error "
+                        f"[model={self.model_identifier}]: {exc.response.text[:300]}"
+                    ) from exc
+
+                break  # success
+
+            except httpx.TimeoutException as exc:
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"Request timed out after {timeout}s "
+                    f"[model={self.model_identifier} endpoint={self.endpoint_url}] "
+                    f"— {_MAX_RETRIES} retries exhausted"
+                ) from exc
+
+            except httpx.ConnectError as exc:
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"Connection failed "
+                    f"[model={self.model_identifier} endpoint={self.endpoint_url}]: {exc} "
+                    f"— {_MAX_RETRIES} retries exhausted"
+                ) from exc
+
         raw = resp.json()
 
         choice = raw["choices"][0]
@@ -104,14 +161,19 @@ class OllamaClient:
         current_messages = list(messages)
         tool_events: list[dict] = []
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        last_prompt_tokens: int = 0
 
         for _ in range(max_iterations):
             response = await self.chat(current_messages, tools=tools)
-            total_usage["prompt_tokens"] += response["usage"]["prompt_tokens"]
+            last_prompt_tokens = response["usage"]["prompt_tokens"]
+            total_usage["prompt_tokens"] += last_prompt_tokens
             total_usage["completion_tokens"] += response["usage"]["completion_tokens"]
 
             if not response["tool_calls"]:
-                return response["content"] or "", tool_events, total_usage
+                # last_prompt_tokens = actual context window size at the final call.
+                # total_usage["prompt_tokens"] is the billing sum across all tool iterations.
+                usage_out = {**total_usage, "last_prompt_tokens": last_prompt_tokens}
+                return response["content"] or "", tool_events, usage_out
 
             # Append assistant message with tool_calls
             current_messages.append({
@@ -152,4 +214,4 @@ class OllamaClient:
                 })
 
         # Reached max_iterations without a non-tool response
-        return "", tool_events, total_usage
+        return "", tool_events, {**total_usage, "last_prompt_tokens": last_prompt_tokens}

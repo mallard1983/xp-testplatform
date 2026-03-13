@@ -26,8 +26,10 @@ experiment:
   pass1_target_min_fraction: 0.35   # ~90K for 256K model
   pass1_target_max_fraction: 0.49   # ~125K for 256K model
 
-  # Pause between turns in seconds (rate limit buffer between API calls)
-  turn_pause_seconds: 5
+  # Pause between turns in seconds — randomised between min and max to avoid
+  # mechanical request patterns that may trigger rate limiting
+  turn_pause_min_seconds: 10
+  turn_pause_max_seconds: 20
 
   # Checkpoint turns — responses at these turns are extracted as evaluation artifacts
   checkpoint_turns: [50, 100, 150, 200]

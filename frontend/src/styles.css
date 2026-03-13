@@ -150,6 +150,34 @@ body {
   transition: width 0.3s ease;
 }
 
+/* ── Context fill bar ─────────────────────────────────────────────────────── */
+
+.context-bar {
+  position: relative;
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  margin-top: 3px;
+  width: 100%;
+}
+
+.context-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.context-threshold {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 8px;
+  background: var(--warning, #e8a838);
+  border-radius: 1px;
+  transform: translateX(-50%);
+}
+
 /* ── Content area ─────────────────────────────────────────────────────────── */
 
 .content {

@@ -53,11 +53,13 @@ export default function HeaderBar({ run, liveEvents, replayStats, onOpenConfig, 
         <span className="header-stat-value">{formatNum(stats.totalTokens)}</span>
       </div>
 
-      {stats.currentContext != null && (
-        <div className="header-stat">
-          <span className="header-stat-label">Context</span>
-          <span className="header-stat-value">{formatNum(stats.currentContext)}</span>
-        </div>
+      {stats.currentContext != null && stats.contextWindow != null && (
+        <ContextBar
+          current={stats.currentContext}
+          window={stats.contextWindow}
+          threshold={run.condition === 'proxy' ? stats.activationThreshold : stats.compactionThreshold}
+          thresholdLabel={run.condition === 'proxy' ? 'P1' : 'Cmp'}
+        />
       )}
 
       {run.condition === 'baseline' && stats.compactionCount > 0 && (
@@ -103,11 +105,37 @@ export default function HeaderBar({ run, liveEvents, replayStats, onOpenConfig, 
   )
 }
 
+function ContextBar({ current, window: win, threshold, thresholdLabel }) {
+  const fillPct = Math.min(100, (current / win) * 100)
+  const threshPct = threshold != null ? Math.min(100, (threshold / win) * 100) : null
+  const label = `${formatNum(current)} / ${formatNum(win)} (${fillPct.toFixed(0)}%)`
+
+  return (
+    <div className="header-stat" style={{ minWidth: 140 }}>
+      <span className="header-stat-label">Context</span>
+      <span className="header-stat-value" style={{ fontSize: 11 }}>{label}</span>
+      <div className="context-bar" title={label}>
+        <div className="context-fill" style={{ width: `${fillPct}%` }} />
+        {threshPct != null && (
+          <div
+            className="context-threshold"
+            title={`${thresholdLabel} threshold: ${formatNum(threshold)}`}
+            style={{ left: `${threshPct}%` }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
 function computeStats(run, liveEvents) {
   let turn = 0
   let turnLimit = run?.parameters?.turn_limit || 0
   let totalTokens = 0
-  let currentContext = null  // API-reported prompt_tokens from last Pass 2 call
+  let currentContext = null
+  let contextWindow = run?.parameters?.context_window || null
+  let activationThreshold = null
+  let compactionThreshold = null
   let compactionCount = 0
   let pass1Activations = 0
   let pass1Tokens = null
@@ -123,6 +151,9 @@ function computeStats(run, liveEvents) {
         const tok = ev.total_tokens
         if (tok) totalTokens = (tok.prompt || 0) + (tok.completion || 0)
         if (ev.current_context != null) currentContext = ev.current_context
+        if (ev.context_window != null) contextWindow = ev.context_window
+        if (ev.activation_threshold != null) activationThreshold = ev.activation_threshold
+        if (ev.compaction_threshold != null) compactionThreshold = ev.compaction_threshold
         if (ev.compaction_count != null) compactionCount = ev.compaction_count
         if (ev.pass1_activations != null) pass1Activations = ev.pass1_activations
         if (ev.pass1_tokens) pass1Tokens = (ev.pass1_tokens.prompt || 0) + (ev.pass1_tokens.completion || 0)
@@ -139,9 +170,22 @@ function computeStats(run, liveEvents) {
     pass1Activations = run.pass1_activations || 0
     if (run.pass1_tokens) pass1Tokens = (run.pass1_tokens.prompt || 0) + (run.pass1_tokens.completion || 0)
     if (run.pass2_tokens) pass2Tokens = (run.pass2_tokens.prompt || 0) + (run.pass2_tokens.completion || 0)
+    // Derive thresholds from parameters when available
+    const p = run.parameters
+    if (p) {
+      if (p.context_window) contextWindow = p.context_window
+      if (p.pass1_activation_fraction && p.context_window)
+        activationThreshold = Math.round(p.context_window * p.pass1_activation_fraction)
+      if (p.compaction_threshold_fraction && p.context_window)
+        compactionThreshold = Math.round(p.context_window * p.compaction_threshold_fraction)
+    }
   }
 
-  return { turn, turnLimit, totalTokens, currentContext, compactionCount, pass1Activations, pass1Tokens, pass2Tokens }
+  return {
+    turn, turnLimit, totalTokens,
+    currentContext, contextWindow, activationThreshold, compactionThreshold,
+    compactionCount, pass1Activations, pass1Tokens, pass2Tokens,
+  }
 }
 
 function formatNum(n) {

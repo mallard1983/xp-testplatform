@@ -87,7 +87,10 @@ function GlobalsTab() {
         <Field label="Compaction Threshold" value={cfg.compaction_threshold_fraction} onChange={v => setCfg({...cfg, compaction_threshold_fraction: +v})} type="number" step="0.01" />
         <Field label="Pass 1 Activation" value={cfg.pass1_activation_fraction} onChange={v => setCfg({...cfg, pass1_activation_fraction: +v})} type="number" step="0.01" />
       </div>
-      <Field label="Pause Between Turns (seconds)" value={cfg.turn_pause_seconds} onChange={v => setCfg({...cfg, turn_pause_seconds: +v})} type="number" />
+      <div className="form-row">
+        <Field label="Turn Pause Min (seconds)" value={cfg.turn_pause_min_seconds} onChange={v => setCfg({...cfg, turn_pause_min_seconds: +v})} type="number" step="1" />
+        <Field label="Turn Pause Max (seconds)" value={cfg.turn_pause_max_seconds} onChange={v => setCfg({...cfg, turn_pause_max_seconds: +v})} type="number" step="1" />
+      </div>
       <button className="btn btn-primary btn-sm" disabled={saving} onClick={saveGlobals} style={{ marginBottom: 24 }}>
         Save Defaults
       </button>
@@ -505,7 +508,8 @@ function TestForm({ experiment, models: initialModels, prompts: initialPrompts, 
   const [ctxWindow, setCtxWindow] = useState(experiment?.context_window || '')
   const [compaction, setCompaction] = useState(experiment?.compaction_threshold_fraction || '')
   const [pass1Act, setPass1Act] = useState(experiment?.pass1_activation_fraction || '')
-  const [turnPause, setTurnPause] = useState(experiment?.turn_pause_seconds || '')
+  const [turnPauseMin, setTurnPauseMin] = useState(experiment?.turn_pause_min_seconds || '')
+  const [turnPauseMax, setTurnPauseMax] = useState(experiment?.turn_pause_max_seconds || '')
   const [selectedMcp, setSelectedMcp] = useState(experiment?.mcp_server_ids || [])
 
   // Local stores — start from props, can be augmented inline
@@ -548,7 +552,8 @@ function TestForm({ experiment, models: initialModels, prompts: initialPrompts, 
       context_window: ctxWindow ? +ctxWindow : null,
       compaction_threshold_fraction: compaction ? +compaction : null,
       pass1_activation_fraction: pass1Act ? +pass1Act : null,
-      turn_pause_seconds: turnPause !== '' ? +turnPause : null,
+      turn_pause_min_seconds: turnPauseMin !== '' ? +turnPauseMin : null,
+      turn_pause_max_seconds: turnPauseMax !== '' ? +turnPauseMax : null,
     })
   }
 
@@ -589,7 +594,10 @@ function TestForm({ experiment, models: initialModels, prompts: initialPrompts, 
         <Field label="Compaction Threshold" value={compaction} onChange={setCompaction} type="number" step="0.01" placeholder={globalCfg ? String(globalCfg.compaction_threshold_fraction) : 'default'} />
         <Field label="Pass 1 Activation" value={pass1Act} onChange={setPass1Act} type="number" step="0.01" placeholder={globalCfg ? String(globalCfg.pass1_activation_fraction) : 'default'} />
       </div>
-      <Field label="Turn Pause (seconds)" value={turnPause} onChange={setTurnPause} type="number" placeholder={globalCfg ? String(globalCfg.turn_pause_seconds) : 'default'} />
+      <div className="form-row">
+        <Field label="Turn Pause Min (seconds)" value={turnPauseMin} onChange={setTurnPauseMin} type="number" step="1" placeholder={globalCfg ? String(globalCfg.turn_pause_min_seconds) : 'default'} />
+        <Field label="Turn Pause Max (seconds)" value={turnPauseMax} onChange={setTurnPauseMax} type="number" step="1" placeholder={globalCfg ? String(globalCfg.turn_pause_max_seconds) : 'default'} />
+      </div>
 
       {mcpServers.length > 0 && (
         <>

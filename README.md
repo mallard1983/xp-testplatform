@@ -54,7 +54,23 @@ Interviewer ──► Orchestrator
 
 Token accounting is intentional: **the interviewer is not counted** — it stands in for a human user and its tokens are not a cost of the system under test. Baseline counts test model tokens only. Proxy counts Pass 1 + Pass 2 tokens separately, since Pass 1 at ~100K tokens per activation adds up quickly and needs to be visible alongside Pass 2.
 
-All token counts use the `prompt_tokens` and `completion_tokens` values returned directly by the API — not local estimates. The **Context** stat shown in the header is the `prompt_tokens` reported by the API on the last Pass 2 call, which is the ground-truth measure of what the model actually processed that turn. This is also the value used to decide when compaction or Pass 1 activation fires.
+All token counts use the `prompt_tokens` and `completion_tokens` values returned directly by the API — not local estimates. When tool calls occur within a turn, multiple API calls are made; the **Context** stat reflects only the final call's `prompt_tokens` (the actual context window fill), while the billing totals (`total_tokens`, `pass1_tokens`, `pass2_tokens`) accumulate across all iterations. This is also the value used to decide when compaction or Pass 1 activation fires.
+
+The closing prompt is delivered at the end of every run with the full conversation history attached, so the model can reflect accurately on what was discussed.
+
+### API reliability
+
+All model calls include a `User-Agent: XP-TestPlatform/1.0` header and are retried automatically on transient failures:
+
+| Failure type | Behaviour |
+|---|---|
+| HTTP 429 (rate limited) | Waits for the `Retry-After` header value (default 30s), retries up to 3 times |
+| HTTP 5xx (server error) | Backs off 5s / 10s / 15s, retries up to 3 times |
+| Timeout | Backs off 5s / 10s / 15s, retries up to 3 times |
+| Connection reset | Same backoff as timeout |
+| HTTP 4xx (other) | Fails immediately — client errors won't resolve on retry |
+
+If all retries are exhausted the run fails with a descriptive error written to both the JSONL log and the UI. The turn number and model identifier are included in every error message.
 
 ---
 
@@ -183,13 +199,15 @@ The header bar shows live stats updated after each turn:
 |------|----------|-------|
 | Turn / turn limit | ✓ | ✓ |
 | Total tokens | ✓ | ✓ |
-| Context (API-reported prompt tokens, last Pass 2 call) | ✓ | ✓ |
+| Context fill bar (`current / window (%)` with threshold marker) | ✓ | ✓ |
 | Compactions | ✓ (when > 0) | — |
 | P1 Activations | — | ✓ |
 | P1 Tokens | — | ✓ |
 | P2 Tokens | — | ✓ |
 
-A progress bar tracks completion against the turn limit.
+The context fill bar shows how much of the configured context window is occupied, with an amber tick mark at the threshold where compaction (baseline) or Pass 1 (proxy) will fire. A progress bar tracks completion against the turn limit.
+
+While scrubbing, the header bar updates to show the stats *as they were at that turn* — total tokens, context fill, compaction count, P1/P2 tokens — so you can watch exactly when costs accumulated and when each mechanism triggered.
 
 ### Replay
 
@@ -200,7 +218,7 @@ When you select a completed run, the Chat tab loads all events and shows the ful
 - Click anywhere on the progress bar to jump to any turn
 - **▶ Show All** exits replay and returns to the full conversation
 
-While scrubbing, the header bar updates to show the stats *as they were at that turn* — total tokens, context size (API-reported), compaction count, P1/P2 tokens — so you can watch exactly how costs accumulated across the run.
+While scrubbing, the header bar updates to show the stats as they were at that turn — context fill, total tokens, compaction count, P1/P2 tokens — so you can watch exactly how costs accumulated and when each mechanism triggered.
 
 ---
 
@@ -214,7 +232,8 @@ Global defaults live in `config/config.yaml`. Per-experiment overrides are set i
 | `context_window` | 256000 | Token budget — set this to match your model's actual context window |
 | `compaction_threshold_fraction` | 0.80 | Baseline: compaction fires when context exceeds this fraction of the window |
 | `pass1_activation_fraction` | 0.50 | Proxy: Pass 1 activates when context exceeds this fraction of the window |
-| `turn_pause_seconds` | 5 | Pause between turns — useful as a rate-limit buffer for cloud APIs |
+| `turn_pause_min_seconds` | 10 | Minimum pause between turns (seconds) |
+| `turn_pause_max_seconds` | 20 | Maximum pause between turns (seconds) — actual pause is randomised between min and max each turn to avoid mechanical request patterns that can trigger rate limiting |
 | `checkpoint_turns` | [50,100,150,200] | Turns where the model's response is extracted as a standalone artifact |
 
 ### Prompts

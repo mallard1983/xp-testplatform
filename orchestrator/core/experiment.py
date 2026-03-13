@@ -120,11 +120,18 @@ async def run_condition(
         if experiment.pass1_activation_fraction is not None
         else cfg.get("pass1_activation_fraction", 0.50)
     )
-    turn_pause = (
-        experiment.turn_pause_seconds
-        if experiment.turn_pause_seconds is not None
-        else cfg.get("turn_pause_seconds", 5)
+    turn_pause_min = (
+        experiment.turn_pause_min_seconds
+        if experiment.turn_pause_min_seconds is not None
+        else cfg.get("turn_pause_min_seconds", 10)
     )
+    turn_pause_max = (
+        experiment.turn_pause_max_seconds
+        if experiment.turn_pause_max_seconds is not None
+        else cfg.get("turn_pause_max_seconds", 20)
+    )
+    # Ensure max >= min in case of misconfiguration
+    turn_pause_max = max(turn_pause_min, turn_pause_max)
     checkpoint_turns = cfg.get("checkpoint_turns", [50, 100, 150, 200])
 
     # ── Resolve prompts ───────────────────────────────────────────────────────
@@ -194,7 +201,8 @@ async def run_condition(
                 context_window=context_window,
                 compaction_threshold_fraction=compaction_threshold,
                 turn_limit=turn_limit,
-                turn_pause_seconds=turn_pause,
+                turn_pause_min_seconds=turn_pause_min,
+                turn_pause_max_seconds=turn_pause_max,
                 checkpoint_turns=checkpoint_turns,
                 logger=logger,
                 on_turn_complete=_on_turn,
@@ -216,7 +224,8 @@ async def run_condition(
                 context_window=context_window,
                 pass1_activation_fraction=pass1_activation,
                 turn_limit=turn_limit,
-                turn_pause_seconds=turn_pause,
+                turn_pause_min_seconds=turn_pause_min,
+                turn_pause_max_seconds=turn_pause_max,
                 checkpoint_turns=checkpoint_turns,
                 logger=logger,
                 on_turn_complete=_on_turn,
@@ -246,7 +255,8 @@ async def run_condition(
                 "context_window": context_window,
                 "compaction_threshold_fraction": compaction_threshold,
                 "pass1_activation_fraction": pass1_activation,
-                "turn_pause_seconds": turn_pause,
+                "turn_pause_min_seconds": turn_pause_min,
+                "turn_pause_max_seconds": turn_pause_max,
                 "checkpoint_turns": checkpoint_turns,
             },
             "database_source": db_source if condition == "proxy" else None,
@@ -259,12 +269,11 @@ async def run_condition(
         raise
 
     # ── Deliver closing prompt ────────────────────────────────────────────────
-    # Delivered as a standalone exchange (not appended to the turn loop history)
-    # so that both conditions receive the closing question in a clean context.
-    closing_messages = [
+    # Appended to the full conversation history so the model can reflect on
+    # the actual exchange that took place.
+    closing_messages = run_result.get("final_history", [
         {"role": "system", "content": test_model_system},
-        {"role": "user", "content": closing_prompt},
-    ]
+    ]) + [{"role": "user", "content": closing_prompt}]
     logger.log_api_request(
         turn_limit + 1, "closing", pass2_client.model_identifier, closing_messages
     )
@@ -313,7 +322,8 @@ async def run_condition(
             "context_window": context_window,
             "compaction_threshold_fraction": compaction_threshold,
             "pass1_activation_fraction": pass1_activation,
-            "turn_pause_seconds": turn_pause,
+            "turn_pause_min_seconds": turn_pause_min,
+            "turn_pause_max_seconds": turn_pause_max,
             "checkpoint_turns": checkpoint_turns,
         },
         "database_source": db_source if condition == "proxy" else None,

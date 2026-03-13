@@ -19,6 +19,7 @@ The closing prompt is delivered after turn 200 by the caller (experiment.py).
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Callable, Awaitable
 
 from core.logger import RunLogger
@@ -42,7 +43,8 @@ async def run_proxy(
     context_window: int,
     pass1_activation_fraction: float,
     turn_limit: int,
-    turn_pause_seconds: float,
+    turn_pause_min_seconds: float,
+    turn_pause_max_seconds: float,
     checkpoint_turns: list[int],
     logger: RunLogger,
     pass1_tool_budget: int = 8,
@@ -101,10 +103,12 @@ async def run_proxy(
 
     proxy_history.append({"role": "assistant", "content": opening_text})
 
-    last_p2_prompt_tokens: int = opening_usage["prompt_tokens"]
+    last_p2_prompt_tokens: int = opening_usage.get("last_prompt_tokens", opening_usage["prompt_tokens"])
 
     opening_stats = {
         "current_context": last_p2_prompt_tokens,
+        "context_window": context_window,
+        "activation_threshold": activation_threshold,
         "total_tokens": dict(total_tokens),
         "pass1_tokens": dict(pass1_tokens),
         "pass2_tokens": dict(pass2_tokens),
@@ -150,8 +154,8 @@ async def run_proxy(
             iv_question = (iv_response["content"] or "").strip()
             logger.log_api_response(turn, "interviewer", interviewer_client.model_identifier,
                                     iv_question, [], iv_response["usage"])
-            if turn_pause_seconds > 0:
-                await asyncio.sleep(turn_pause_seconds)
+            if turn_pause_min_seconds > 0:
+                await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
             # 2. Build current message array for this turn
             current_messages = proxy_history + [{"role": "user", "content": iv_question}]
@@ -168,14 +172,14 @@ async def run_proxy(
                 )
                 _accumulate(total_tokens, model_usage)
                 _accumulate(pass2_tokens, model_usage)
-                last_p2_prompt_tokens = model_usage["prompt_tokens"]
-                if turn_pause_seconds > 0:
-                    await asyncio.sleep(turn_pause_seconds)
+                last_p2_prompt_tokens = model_usage.get("last_prompt_tokens", model_usage["prompt_tokens"])
                 for ev in tool_events:
                     logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
                                          ev["result"], ev["error"])
                 logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
                                         model_text, [], model_usage)
+                if turn_pause_min_seconds > 0:
+                    await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
             else:
                 # Above threshold: activate Pass 1
@@ -196,8 +200,8 @@ async def run_proxy(
                 context_block = extract_context_block(pass1_output)
                 logger.log_api_response(turn, "pass1", pass1_client.model_identifier,
                                         pass1_output, [], pass1_usage)
-                if turn_pause_seconds > 0:
-                    await asyncio.sleep(turn_pause_seconds)
+                if turn_pause_min_seconds > 0:
+                    await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
                 # Pass 2 with injected context
                 logger.log_api_request(turn, "pass2", pass2_client.model_identifier, [], tools)
@@ -211,18 +215,20 @@ async def run_proxy(
                 )
                 _accumulate(total_tokens, model_usage)
                 _accumulate(pass2_tokens, model_usage)
-                last_p2_prompt_tokens = model_usage["prompt_tokens"]
+                last_p2_prompt_tokens = model_usage.get("last_prompt_tokens", model_usage["prompt_tokens"])
                 for ev in tool_events:
                     logger.log_tool_call(turn, "pass2", ev["tool"], ev["args"],
                                          ev["result"], ev["error"])
                 logger.log_api_response(turn, "pass2", pass2_client.model_identifier,
                                         model_text, [], model_usage)
-                if turn_pause_seconds > 0:
-                    await asyncio.sleep(turn_pause_seconds)
+                if turn_pause_min_seconds > 0:
+                    await asyncio.sleep(random.uniform(turn_pause_min_seconds, turn_pause_max_seconds))
 
             # 4. Log turn
             turn_stats = {
                 "current_context": last_p2_prompt_tokens,
+                "context_window": context_window,
+                "activation_threshold": activation_threshold,
                 "total_tokens": dict(total_tokens),
                 "pass1_tokens": dict(pass1_tokens),
                 "pass2_tokens": dict(pass2_tokens),
@@ -269,6 +275,10 @@ async def run_proxy(
             on_cancel(_partial_result)
         raise
 
+    except Exception as exc:
+        logger.log_error(_partial_result.get("turns_completed"), str(exc))
+        raise
+
     # Allow pending writes to complete (best effort — don't block on failures)
     if pending_writes:
         await asyncio.gather(*pending_writes, return_exceptions=True)
@@ -280,6 +290,7 @@ async def run_proxy(
         "pass1_tokens": pass1_tokens,
         "pass2_tokens": pass2_tokens,
         "checkpoint_turns": completed_checkpoints,
+        "final_history": proxy_history,
     }
 
 
